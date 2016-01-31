@@ -1,0 +1,160 @@
+---
+title: "Practical Machine Learning Course Project"
+author: "Ajla Dzajic"
+date: "Sunday, January 31, 2016"
+output: html_document
+---
+## Background
+
+Using devices such as *Jawbone Up*, *Nike FuelBand*, and *Fitbit* it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement - a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or because they are tech geeks. One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. In this project, our goal will be to use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways. 
+More information is available from the website here <http://groupware.les.inf.puc-rio.br/har> (see the section on the Weight Lifting Exercise Dataset).
+
+## Data
+
+The data for this project come from this source: <http://groupware.les.inf.puc-rio.br/har>.
+
+
+### Getting and Cleaning Data
+
+First we're going to download our training and testing data. 
+
+```{r,cache = TRUE, message=FALSE}
+if(!file.exists('data')){
+        dir.create('data')
+        
+        fileUrl <- 'https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv'
+        download.file(fileUrl, destfile = './data/pml-training.csv')
+        
+        fileUrlTest <- 'https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv'
+        download.file(fileUrlTest, destfile = './data/pml-testing.csv')
+}
+
+
+training <- read.csv('./data/pml-training.csv', na.strings = c('NA', '#DIV/0!'))
+testing <- read.csv('./data/pml-testing.csv', na.strings = c('NA', '#DIV/0!'))
+
+```
+
+*I actually read in both training and testing set previously and after inspection of the training set 
+decided to do it again, but this time defining #DIV/0! as NA.*
+
+```{r, results='hide'}
+str(training)
+```
+
+Since there are 160 variables and some of them contain a lot of NA's, I'll use whatis() from Yaletoolkit package to get a summary of each column/variable in the data set.
+
+```{r, message=FALSE}
+library(YaleToolkit)
+head(whatis(training), 30)
+```
+
+We can see from the output of whatis() function that some columns have 98% (or more) of observations missing. Inspecting the data set further we see that variables such as skewness, kurtosis, amplitude etc. have values only when new_window = 'yes'. This leaves us with almost whole columns of NA values and very little data to use for prediction. I considered imputation but rejected the idea because of the lack of nearest data vectors that look most like the ones with missins values, and because of the sheer number of missing values in these columns. After consulting the documentation I decided to use raw reading from accelerometer, gyroscope and magnetometer as well as calculated features on the Euler angles (roll, pitch
+and yaw). Columns with features like  mean, variance, standard deviation, max, min, amplitude, kurtosis and skewness, which were calculated for the Euler angles of each of the four sensors and which contain mostly NA's, I decided to discard. 
+
+```{r}
+training <- training[, colSums(is.na(training)) < 19216]
+```
+
+Since I'm not going to use time series for prediction I'll remove data on time as well as some other columns which I don't find particularly useful for prediction. I'll leave user_name because I believe that there might be some correlation between the way the exercises are performed and the person who performs them. 
+
+```{r}
+training <- subset(training, select = -c(1, 3:7))
+dim(training)
+```
+
+&nbsp;
+
+### Using Algorithms for Prediction
+
+After cleaning up my data set, I'll create training and test/validation set. My training set will contain 70% of my data and my testing/validation set will contain 30% of the data.
+
+```{r, message=FALSE}
+library(caret)
+set.seed(111) # setting the seed for reproducibility
+inTrain <- createDataPartition(y = training$classe, p = 0.7, list = FALSE)
+Train <- training[inTrain,]
+Test <- training[-inTrain,]
+```
+
+The goal of our project is to predict the manner in which the participants did the exercise. This is the "classe" variable in the training set(we used it to create data partition into training and test set).
+***First, we'll try using classification trees for prediction.***
+
+&nbsp;
+
+Configuring parallel processing:
+```{r, message=FALSE}
+library(parallel)
+library(doParallel)
+cluster <- makeCluster(detectCores() - 1) # convention to leave 1 core for OS
+registerDoParallel(cluster)
+```
+
+Developing training model:
+```{r, cache=TRUE, message=FALSE}
+library(rpart)
+set.seed(111)
+fit1 <- train(classe ~ ., method = 'rpart', data = Train)
+fit1
+```
+
+Our prediction tree:
+```{r, message=FALSE}
+library(rattle)
+fancyRpartPlot(fit1$finalModel)
+```
+
+As we can see, the accuracy of our final/best model is 0.5096860, which is far from satisfying and we'll have to consider using other models for prediction. 
+***Our second option is using random forests.*** To estimate the accuracy of our model we'll use k-fold cross validation this time. We'll choose k = 5 as the number of folds. 
+
+Configuring train control object:
+```{r}
+fitControl <- trainControl(method = "cv", number = 5, allowParallel = TRUE)
+```
+
+Developing training model:
+```{r, cache=TRUE, message=FALSE}
+set.seed(111)
+fit2 <- train(classe ~ ., method="rf",data=Train,trControl = fitControl)
+```
+
+Our fitted models:
+```{r}
+print(fit2)
+plot(fit2)
+```
+
+The plot of the fit confirms that the accuracy is best/highest when using 29 predictors on each split.
+
+Predicting on our test set:
+```{r, message=FALSE}
+prediction <- predict(fit2, newdata = Test)
+```
+
+Confusion matrix and Statistics:
+```{r}
+confusionMatrix(prediction, Test$classe)
+```
+
+As we can see from the output, the accuracy of our model on the test set is 0.9907. We can also calculate it as our estimated out-of-sample accuracy:
+```{r}
+OOS_Accuracy <- sum(prediction == Test$classe)/length(prediction)
+OOS_Accuracy
+```
+
+The goal of cross-validation is to estimate the expected level of fit of a model to a data set that is 
+independent of the data that were used to train the model. It can be used to estimate any quantitative measure of fit that is appropriate for the data and model. In this situation the misclassification error rate can be used to summarize the fit.
+
+Estimated out-of-sample error:
+```{r}
+OOS_Error <- 1 - OOS_Accuracy
+OOS_Error * 100
+```
+
+### Course Project Prediction Quiz Portion
+
+```{r}
+predictions <- predict(fit2, newdata = testing)
+predictions
+```
+
